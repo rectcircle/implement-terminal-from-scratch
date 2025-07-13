@@ -22,6 +22,7 @@ const terminalASNIEscapeSeqDemo =
 "        \\x1B[1C 右移一列\r\n" +
 "        \\x1B[1D 左移一列 *\x1B[1B\x1B[1C" +
 "这段文字应该打印在 * 号的右下角\r\n"+
+"更多的指令可以参考 https://en.wikipedia.org/wiki/ANSI_escape_code\r\n" +
 "";
 
 async function sleep(ms) {
