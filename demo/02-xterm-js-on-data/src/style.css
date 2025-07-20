@@ -1,0 +1,9 @@
+#terminal {
+  width: 100%;
+  height: 300px;
+}
+
+#xterm_js_on_data_container {
+  width: 100%;
+  overflow: auto;
+}
