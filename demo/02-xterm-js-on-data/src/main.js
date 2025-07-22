@@ -14,7 +14,7 @@ async function main() {
   const xtermJsOnDataCode = document.querySelector('#xterm_js_on_data_code');
 
   terminal.onData((data) => {
-    xtermJsOnDataCode.textContent += JSON.stringify(data) + "\n";
+    xtermJsOnDataCode.textContent += JSON.stringify(data) + " " + data.charCodeAt(0) + "\n";
   });
 
   for (const char of terminalASNIEscapeSeqDemo) {
