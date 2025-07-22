@@ -10,10 +10,12 @@ async function main() {
   const wsConn = new WebSocket(`ws://localhost:8080/`);
 
   terminal.onData((data) => {
+    console.log("terminal->ws: "+JSON.stringify(data) + " " + data.charCodeAt(0));
     wsConn.send(data);
   });
-
+  
   wsConn.onmessage = (event) => {
+    console.log("ws->terminal: "+JSON.stringify(event.data));
     terminal.write(event.data);
   };
 }

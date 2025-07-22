@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -82,6 +84,9 @@ func ptyWsHandler(w http.ResponseWriter, r *http.Request) {
 				close(ptyToClientCloseCh)
 				return
 			}
+			jsonStr, _ := json.Marshal(string(buf))
+			fmt.Printf("ws->pty: %s, %v\n", string(jsonStr), buf)
+
 			// 读取到数据后，将其写入 pty
 			if len(buf) > 0 {
 				_, err := ptyFile.Write(buf)
