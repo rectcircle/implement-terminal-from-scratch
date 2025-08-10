@@ -24,7 +24,6 @@ func (k *JobController) Execute(input string) error {
 // Job 表示一个作业，包含单个命令或管道命令
 type Job struct {
 	commands []*exec.Cmd     // 命令列表，每个元素是一个 *exec.Cmd
-	hasPipe  bool            // 是否有管道符
 	pgid     int             // 进程组ID
 	pipes    []io.ReadCloser // 管道连接
 }
@@ -37,9 +36,7 @@ func NewJob(input string) (*Job, error) {
 		return nil, nil
 	}
 
-	job := &Job{
-		hasPipe: len(pipeCommands) > 1,
-	}
+	job := &Job{}
 
 	// 将每个命令构造为 *exec.Cmd
 	for _, cmdStr := range pipeCommands {
@@ -71,36 +68,7 @@ func (j *Job) Start() error {
 		return nil
 	}
 
-	// 如果只有一个命令且没有管道符，直接启动
-	if len(j.commands) == 1 && !j.hasPipe {
-		cmd := j.commands[0]
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Start()
-	}
-
-	// 有管道符的情况，需要设置进程组和管道连接
-	return j.startPipeCommands()
-}
-
-// Wait 等待Job中的所有进程退出
-func (j *Job) Wait() error {
-	if len(j.commands) == 0 {
-		return nil
-	}
-
-	// 如果只有一个命令且没有管道符，直接等待
-	if len(j.commands) == 1 && !j.hasPipe {
-		return j.commands[0].Wait()
-	}
-
-	// 有管道符的情况，等待进程组
-	return j.waitPipeCommands()
-}
-
-// startPipeCommands 启动管道命令
-func (j *Job) startPipeCommands() error {
+	// 统一处理所有命令，都创建进程组
 	cmds := j.commands
 
 	// 设置管道连接
@@ -159,8 +127,13 @@ func (j *Job) startPipeCommands() error {
 	return nil
 }
 
-// waitPipeCommands 等待管道命令完成
-func (j *Job) waitPipeCommands() error {
+// Wait 等待Job中的所有进程退出
+func (j *Job) Wait() error {
+	if len(j.commands) == 0 {
+		return nil
+	}
+
+	// 统一使用进程组等待
 	// 等待进程组中的所有进程完成
 	// 使用 Wait4 等待进程组
 	for {
