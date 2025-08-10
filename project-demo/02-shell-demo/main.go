@@ -4,12 +4,12 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 )
 
 func main() {
 	reader := bufio.NewReader(os.Stdin)
+	jobController := &JobController{}
 
 	for {
 		// 显示提示符
@@ -38,22 +38,8 @@ func main() {
 			break
 		}
 
-		// 分割命令和参数 (不考虑 "" '' 等语法)
-		args := strings.Fields(input)
-		if len(args) == 0 {
-			continue
-		}
-
-		// 第一个参数是命令，其余是参数
-		cmd := exec.Command(args[0], args[1:]...)
-
-		// 设置标准输入、输出、错误输出
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-
-		// 执行命令
-		err = cmd.Run()
+		// 解析并执行命令
+		err = jobController.Execute(input)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error executing command: %v\n", err)
 		}
