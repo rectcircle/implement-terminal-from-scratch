@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
@@ -20,6 +21,10 @@ func main() {
 		// 读取用户输入
 		input, err := reader.ReadString('\n')
 		if err != nil {
+			if err == io.EOF {
+				fmt.Println("\nGoodbye!")
+				break
+			}
 			fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
 			continue
 		}
