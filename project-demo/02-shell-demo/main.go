@@ -12,6 +12,11 @@ func main() {
 	reader := bufio.NewReader(os.Stdin)
 	jobController := &JobController{}
 
+	if !jobController.CanEnableJobControl() {
+		fmt.Println("Job control not available. Exiting.")
+		os.Exit(1)
+	}
+
 	for {
 		// 显示提示符
 		fmt.Print("shell-demo> ")

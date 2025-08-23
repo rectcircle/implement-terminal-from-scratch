@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 type JobController struct {
@@ -169,4 +171,30 @@ func (j *Job) Wait() error {
 	}
 
 	return nil
+}
+
+// CanEnableJobControl 判断当前进程是否可以启用作业控制
+func (k *JobController) CanEnableJobControl() bool {
+	// 检查是否有控制终端
+	if !isatty(os.Stdin.Fd()) {
+		return false
+	}
+
+	// 获取当前进程的进程组ID
+	currentPgid := syscall.Getpgrp()
+
+	// 获取前台进程组ID
+	foregroundPgid, err := unix.IoctlGetInt(int(os.Stdin.Fd()), unix.TIOCGPGRP)
+	if err != nil {
+		return false
+	}
+
+	// 如果当前进程组就是前台进程组，则可以启用作业控制
+	return currentPgid == foregroundPgid
+}
+
+// isatty 检查文件描述符是否是终端
+func isatty(fd uintptr) bool {
+	_, err := unix.IoctlGetTermios(int(fd), ioctlReadTermios)
+	return err == nil
 }
