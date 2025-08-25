@@ -1,9 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"syscall"
 
@@ -57,7 +59,28 @@ func NewJob(input string) (*Job, error) {
 
 // Execute 执行Job中的命令
 func (j *Job) Execute() error {
-	err := j.Start()
+	// 不管怎样，都需要获取当前进程的进程组ID，并将其设置为前台进程组
+	// 先获取当前的进程组 ID
+	currentPgid, err := unix.Getpgid(0)
+	if err != nil {
+		return fmt.Errorf("Execute job, get pgid failed: %s", err)
+	}
+	defer func() {
+		// 需要忽略 SIGTTOU 信号，否则会导致前台进程组切换失败，原因如下：
+		// 1. Unix 系统为了安全，当调用 TIOCSPGRP 的进程不在前台进程组时，会发送 SIGTTOU 信号，而 SIGTTOU 的默认行为是退出进程。
+		//    因为 TIOCSPGRP 是给 Shell 程序调用的，如果普通程序调用这个函数，会破坏 Shell 的作业管理，因此 Unix 系统才设计了这个机制。
+		// 2. 我们实现的这个程序就是一个 Shell，因此就是要调用 TIOCSPGRP 的，因此需要避免 SIGTTOU 信号的影响，有两种办法。
+		//    a. 忽略这个信号，这里采用这个方案。
+		//    b. 通过 sigprocmask 屏蔽这个信号（这里需要说一下，对于其他信号，屏蔽信号只是延后信号的处理，但是对于 SIGTTOU 信号，屏蔽了之后，就不会再产生了） Go 的 syscall.SysProcAttr.Foreground 通过该方案实现。
+		signal.Ignore(syscall.SIGTTOU)
+		defer signal.Reset(syscall.SIGTTOU)
+		err = unix.IoctlSetPointerInt(int(os.Stdin.Fd()), unix.TIOCSPGRP, currentPgid)
+		if err != nil {
+			panic(err)
+		}
+	}()
+	// 获取当前进程组
+	err = j.Start()
 	if err != nil {
 		return err
 	}
@@ -103,10 +126,16 @@ func (j *Job) Start() error {
 	// 启动所有命令，并设置进程组
 	for i, cmd := range cmds {
 		if i == 0 {
-			// 第一个进程作为进程组组长
+			// 第一个进程作为进程组组长，并将该进程组设置为前台
 			cmd.SysProcAttr = &syscall.SysProcAttr{
 				Setpgid: true,
 				Pgid:    0, // 0 表示使用进程自己的PID作为进程组ID
+				// 实现原理是：
+				// 1. 在 fork 之前，调用 sigprocmask 屏蔽了所有信号 (runtime/proc.go syscall_runtime_BeforeFork)。
+				// 2. 在 fork 之后 exec 之前：
+				//    a. 调用 TIOCSPGRP 将子进程进程组设置为 session 的前台进程组 (syscall/exec_libc2.go forkAndExecInChild)。
+				//    b. 调用 msigrestore 恢复到信号屏蔽集 (runtime/proc.go syscall_runtime_AfterForkInChild)。
+				Foreground: true, // 将当前进程组设置为 session 的前台进程组
 			}
 		} else {
 			// 后续进程加入第一个进程的进程组
@@ -181,16 +210,16 @@ func (k *JobController) CanEnableJobControl() bool {
 	}
 
 	// 获取当前进程的进程组ID
-	currentPgid := syscall.Getpgrp()
-
-	// 获取前台进程组ID
-	foregroundPgid, err := unix.IoctlGetInt(int(os.Stdin.Fd()), unix.TIOCGPGRP)
+	currentPgid, err := unix.Getpgid(0)
 	if err != nil {
 		return false
 	}
 
+	// 获取前台进程组ID
+	pgrpid := syscall.Getpgrp()
+
 	// 如果当前进程组就是前台进程组，则可以启用作业控制
-	return currentPgid == foregroundPgid
+	return currentPgid == pgrpid
 }
 
 // isatty 检查文件描述符是否是终端
