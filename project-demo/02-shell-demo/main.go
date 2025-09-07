@@ -10,7 +10,11 @@ import (
 
 func main() {
 	reader := bufio.NewReader(os.Stdin)
-	jobController := &JobController{}
+	jobController, err := NewJobController()
+	if err != nil {
+		fmt.Println("Job control not available. Exiting.")
+		os.Exit(1)
+	}
 
 	if !jobController.CanEnableJobControl() {
 		fmt.Println("Job control not available. Exiting.")
@@ -36,11 +40,6 @@ func main() {
 
 		// 去除首位换行符和空格
 		input = strings.TrimSpace(input)
-
-		// 如果输入为空，继续下一次循环
-		if input == "" {
-			continue
-		}
 
 		// 如果输入是 exit，退出程序
 		if input == "exit" {
