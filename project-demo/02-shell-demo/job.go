@@ -97,7 +97,7 @@ func (k *JobController) Execute(input string) error {
 			} else {
 				statusStr = fmt.Sprintf("Exit %d", job.exitCode)
 			}
-			fmt.Printf("[%d]+  %s                  %s\n", jobId, statusStr, job.commandStr)
+			fmt.Printf("[%d] %s                  %s\n", jobId, statusStr, job.commandStr)
 			delete(k.runningJobIds, jobId)
 		}
 	}
