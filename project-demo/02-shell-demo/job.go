@@ -6,10 +6,19 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 
 	"golang.org/x/sys/unix"
+)
+
+// Job 状态常量
+const (
+	JobStatusRunning = "Running"
+	JobStatusStopped = "Stopped"
+	JobStatusDone    = "Done"
 )
 
 type JobController struct {
@@ -17,8 +26,6 @@ type JobController struct {
 	shellForegroundPgid int
 	// 运行中的 job id (从 1 开始)
 	runningJobIds map[int]*Job
-	// // 前台 JobID (0 表示当前 shell 进程)
-	// foregroundJobId int
 }
 
 func NewJobController() (*JobController, error) {
@@ -30,7 +37,6 @@ func NewJobController() (*JobController, error) {
 	return &JobController{
 		shellForegroundPgid: currentPgid,
 		runningJobIds:       make(map[int]*Job),
-		// foregroundJobId:     0,
 	}, nil
 }
 
@@ -82,7 +88,8 @@ func (k *JobController) AddJob(input string) (int, error) {
 // Execute 解析并执行命令，支持管道符
 func (k *JobController) Execute(input string) error {
 	// 前置流程：检查后台进程是否执行完成
-	for jobId, job := range k.runningJobIds {
+	for _, jobId := range k.sortedJobIds() {
+		job := k.runningJobIds[jobId]
 		if job.background {
 			err := job.Wait(true)
 			if err != nil {
@@ -93,7 +100,7 @@ func (k *JobController) Execute(input string) error {
 				// 进程还在运行
 				continue
 			} else if job.exitCode == 0 {
-				statusStr = "Done"
+				statusStr = JobStatusDone
 			} else {
 				statusStr = fmt.Sprintf("Exit %d", job.exitCode)
 			}
@@ -107,6 +114,16 @@ func (k *JobController) Execute(input string) error {
 		return nil
 	}
 
+	// 尝试执行内建命令
+	isBuiltin, err := k.tryExecuteBuiltinCommand(input)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", err.Error())
+		return nil
+	}
+	if isBuiltin {
+		return nil
+	}
+
 	// 创建 Job
 	jobId, err := k.AddJob(input)
 	if err != nil {
@@ -116,18 +133,168 @@ func (k *JobController) Execute(input string) error {
 	// 启动 Job
 	err = job.Start()
 	if err != nil {
+		delete(k.runningJobIds, jobId)
 		return err
 	}
 	// 前台执行
 	if !job.background {
-		defer func() { // 执行结束后，从 job 列表中删除
-			delete(k.runningJobIds, jobId)
-		}()
-		defer k.ForceSetShellForeground() // 执行结束后强制把 shell 进程设置为前台
-		return job.Wait(false)
+		return k.waitForegroundJob(jobId, job)
 	}
 	// 后台执行
 	fmt.Printf("[%d] %d\n", jobId, job.pgid)
+	return nil
+}
+
+func (k *JobController) sortedJobIds() []int {
+	keys := make([]int, 0, len(k.runningJobIds))
+	for id := range k.runningJobIds {
+		keys = append(keys, id)
+	}
+	sort.Ints(keys) // 升序
+	return keys
+}
+
+// tryExecuteBuiltinCommand 处理内置命令，返回是否是内置命令
+func (k *JobController) tryExecuteBuiltinCommand(input string) (bool, error) {
+	args := strings.Fields(input)
+	if len(args) == 0 {
+		return false, nil
+	}
+
+	switch args[0] {
+	case "jobs":
+		return true, k.handleJobsCommand()
+	case "bg":
+		if len(args) != 2 {
+			return true, fmt.Errorf("bg: usage: bg <jobid>")
+		}
+		return true, k.handleBgCommand(args[1])
+	case "fg":
+		if len(args) != 2 {
+			return true, fmt.Errorf("fg: usage: fg <jobid>")
+		}
+		return true, k.handleFgCommand(args[1])
+	default:
+		return false, nil
+	}
+}
+
+// handleJobsCommand 处理 jobs 命令
+func (k *JobController) handleJobsCommand() error {
+	for _, jobId := range k.sortedJobIds() {
+		job := k.runningJobIds[jobId]
+		var statusStr string
+		if job.exitCode == -1 {
+			statusStr = JobStatusRunning
+		} else if job.exitCode == -2 {
+			statusStr = JobStatusStopped
+		} else if job.exitCode == 0 {
+			statusStr = JobStatusDone
+		} else {
+			statusStr = fmt.Sprintf("Exit %d", job.exitCode)
+		}
+
+		commandStr := job.commandStr
+		if job.exitCode == -1 && job.background {
+			commandStr += " &"
+		}
+
+		fmt.Printf("[%d] %s                  %s\n", jobId, statusStr, commandStr)
+	}
+	return nil
+}
+
+// handleBgCommand 处理 bg 命令
+func (k *JobController) handleBgCommand(jobIdStr string) error {
+	jobId, err := strconv.Atoi(jobIdStr)
+	if err != nil {
+		return fmt.Errorf("bg: invalid job id: %s", jobIdStr)
+	}
+
+	job, exists := k.runningJobIds[jobId]
+	if !exists {
+		return fmt.Errorf("bg: job %d not found", jobId)
+	}
+
+	if job.exitCode != -2 {
+		return fmt.Errorf("bg: job %d is not stopped", jobId)
+	}
+
+	// 向进程组发送 SIGCONT 信号
+	err = syscall.Kill(-job.pgid, syscall.SIGCONT)
+	if err != nil {
+		return fmt.Errorf("bg: failed to send SIGCONT to job %d: %v", jobId, err)
+	}
+
+	// 更新 Job 状态
+	job.exitCode = -1
+	job.background = true
+
+	// 打印 Job 信息
+	fmt.Printf("[%d] %s &\n", jobId, job.commandStr)
+
+	return nil
+}
+
+// handleFgCommand 处理 fg 命令
+func (k *JobController) handleFgCommand(jobIdStr string) error {
+	jobId, err := strconv.Atoi(jobIdStr)
+	if err != nil {
+		return fmt.Errorf("fg: invalid job id: %s", jobIdStr)
+	}
+
+	job, exists := k.runningJobIds[jobId]
+	if !exists {
+		return fmt.Errorf("fg: job %d not found", jobId)
+	}
+
+	// 打印命令字符串
+	fmt.Printf("%s\n", job.commandStr)
+
+	// 如果 Job 处于 Stop 状态，先发送 SIGCONT 信号
+	if job.exitCode == -2 {
+		err = syscall.Kill(-job.pgid, syscall.SIGCONT)
+		if err != nil {
+			return fmt.Errorf("fg: failed to send SIGCONT to job %d: %v", jobId, err)
+		}
+	}
+
+	// 将 Job 的进程组设置为前台进程组
+	signal.Ignore(syscall.SIGTTOU)
+	defer signal.Reset(syscall.SIGTTOU)
+	err = unix.IoctlSetPointerInt(int(os.Stdin.Fd()), unix.TIOCSPGRP, job.pgid)
+	if err != nil {
+		return fmt.Errorf("fg: failed to set job %d as foreground: %v", jobId, err)
+	}
+
+	// 更新 Job 状态
+	job.background = false
+	job.exitCode = -1
+
+	// TODO: 走统一的 wait 前台进程逻辑，也需要支撑 ctrl + z
+	// 阻塞等待 Job 退出或暂停
+	return k.waitForegroundJob(jobId, job)
+}
+
+// waitForegroundJob 等待前台 Job 执行完成，并处理清理逻辑
+func (k *JobController) waitForegroundJob(jobId int, job *Job) error {
+	defer func() { // 执行结束后，从 job 列表中删除
+		if job.exitCode != -1 && job.exitCode != -2 {
+			delete(k.runningJobIds, jobId)
+		}
+	}()
+	defer k.ForceSetShellForeground() // 执行结束后强制把 shell 进程设置为前台
+
+	err := job.Wait(false)
+	if err != nil {
+		return err
+	}
+
+	// 判断是否是 stop 状态
+	if job.exitCode == -2 {
+		fmt.Printf("[%d] %s                  %s\n", jobId, JobStatusStopped, job.commandStr)
+	}
+
 	return nil
 }
 
@@ -137,9 +304,8 @@ type Job struct {
 	commands   []*exec.Cmd     // 命令列表，每个元素是一个 *exec.Cmd
 	pgid       int             // 进程组ID
 	pipes      []io.ReadCloser // 管道连接
-	exitCode   int             // Job 整体退出码（最后一个进程），-1 表示正在运行中
-
-	background bool // 是否是后台 job
+	exitCode   int             // Job 整体退出码：-1 运行中，-2 已暂停，其他值为退出码
+	background bool            // 是否是后台 job
 }
 
 // NewJob 创建一个新的Job，解析命令字符串
@@ -257,9 +423,9 @@ func (j *Job) Wait(wnohang bool) error {
 		return nil
 	}
 	// 调用 wait 命令检查进程状态
-	waitOptions := 0
+	waitOptions := syscall.WUNTRACED // 添加 WUNTRACED
 	if wnohang {
-		waitOptions = syscall.WNOHANG
+		waitOptions |= syscall.WNOHANG // 使用位或操作
 	}
 
 	for i, cmd := range j.commands {
@@ -282,6 +448,13 @@ func (j *Job) Wait(wnohang bool) error {
 			// WNOHANG 且没有子进程状态变化，说明进程还在运行
 			continue
 		}
+		// 检查进程是否被暂停
+		if wstatus.Stopped() {
+			j.exitCode = -2
+			// 对于暂停的进程，不设置 exitCode
+			return nil
+		}
+
 		if i == len(j.commands)-1 {
 			// 最后一个命令的退出码作为 job 的退出码
 			j.exitCode = wstatus.ExitStatus()
